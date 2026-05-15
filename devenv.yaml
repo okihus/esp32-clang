@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+  nixpkgs-esp-dev:
+    url: github:mirrexagon/nixpkgs-esp-dev
+
+# The mirrexagon flake marks python3.*-ecdsa as insecure (see upstream README).
+permittedInsecurePackages:
+  - "python3.12-ecdsa-0.19.0"
+  - "python3.13-ecdsa-0.19.0"
