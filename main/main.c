@@ -1,12 +1,15 @@
+#include "argtable3/argtable3.h"
 #include "esp_chip_info.h"
+#include "esp_console.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_now.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/event_groups.h"
-#include "freertos/task.h"
 #include "includes/led.h"
 #include "nvs_flash.h"
 #include <stdio.h>
@@ -19,17 +22,15 @@ static const char *TAG = "wifi";
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry = 0;
 static httpd_handle_t s_server = NULL;
-static volatile int s_tick = 0;
 
 static esp_err_t root_get_handler(httpd_req_t *req) {
   char body[256];
   int n = snprintf(body, sizeof(body),
                    "<!doctype html><html><body>"
                    "<h1>Hello from ESP32-C6</h1>"
-                   "<p>Tick: %d</p>"
                    "<p>Uptime: %lld s</p>"
                    "</body></html>",
-                   s_tick, esp_timer_get_time() / 1000000);
+                   esp_timer_get_time() / 1000000);
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, body, n);
 }
@@ -106,6 +107,131 @@ static void wifi_init_sta(void) {
   ESP_LOGI(TAG, "Connecting to SSID \"%s\"...", CONFIG_WIFI_SSID);
 }
 
+static const uint8_t s_broadcast_mac[ESP_NOW_ETH_ALEN] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+
+static void on_enow_recv(const esp_now_recv_info_t *info, const uint8_t *data,
+                         int len) {
+  printf("\n[enow] " MACSTR " (%d): %.*s\n", MAC2STR(info->src_addr), len, len,
+         (const char *)data);
+}
+
+static void on_enow_send(const wifi_tx_info_t *info,
+                         esp_now_send_status_t status) {
+  if (status != ESP_NOW_SEND_SUCCESS) {
+    ESP_LOGW("enow", "send to " MACSTR " failed", MAC2STR(info->des_addr));
+  }
+}
+
+static void enow_init(void) {
+  ESP_ERROR_CHECK(esp_now_init());
+  ESP_ERROR_CHECK(esp_now_register_recv_cb(on_enow_recv));
+  ESP_ERROR_CHECK(esp_now_register_send_cb(on_enow_send));
+
+  esp_now_peer_info_t peer = {
+      .channel = 0,
+      .ifidx = WIFI_IF_STA,
+      .encrypt = false,
+  };
+  memcpy(peer.peer_addr, s_broadcast_mac, ESP_NOW_ETH_ALEN);
+  ESP_ERROR_CHECK(esp_now_add_peer(&peer));
+
+  uint8_t mac[ESP_NOW_ETH_ALEN];
+  esp_wifi_get_mac(WIFI_IF_STA, mac);
+  ESP_LOGI("enow", "ready, my MAC " MACSTR, MAC2STR(mac));
+}
+
+static int cmd_enow(int argc, char **argv) {
+  if (argc < 2) {
+    printf("usage: enow <text>\n");
+    return 1;
+  }
+  char buf[ESP_NOW_MAX_DATA_LEN];
+  size_t off = 0;
+  for (int i = 1; i < argc && off < sizeof(buf); i++) {
+    if (i > 1 && off < sizeof(buf))
+      buf[off++] = ' ';
+    size_t n = strlen(argv[i]);
+    if (off + n > sizeof(buf))
+      n = sizeof(buf) - off;
+    memcpy(buf + off, argv[i], n);
+    off += n;
+  }
+  esp_err_t err = esp_now_send(s_broadcast_mac, (const uint8_t *)buf, off);
+  if (err != ESP_OK) {
+    printf("send failed: %s\n", esp_err_to_name(err));
+    return 1;
+  }
+  return 0;
+}
+
+static struct {
+  struct arg_int *r;
+  struct arg_int *g;
+  struct arg_int *b;
+  struct arg_end *end;
+} led_args;
+
+static int cmd_led(int argc, char **argv) {
+  int nerrors = arg_parse(argc, argv, (void **)&led_args);
+  if (nerrors != 0) {
+    arg_print_errors(stderr, led_args.end, argv[0]);
+    return 1;
+  }
+  led_set(led_args.r->ival[0], led_args.g->ival[0], led_args.b->ival[0]);
+  return 0;
+}
+
+static int cmd_info(int argc, char **argv) {
+  esp_chip_info_t info;
+  esp_chip_info(&info);
+  printf("chip: %s, %d core(s), rev v%d.%d\n", CONFIG_IDF_TARGET, info.cores,
+         info.revision / 100, info.revision % 100);
+  printf("uptime: %lld s\n", esp_timer_get_time() / 1000000);
+  return 0;
+}
+
+static void start_repl(void) {
+  esp_console_repl_t *repl = NULL;
+  esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+  repl_cfg.prompt = "esp32> ";
+  esp_console_dev_usb_serial_jtag_config_t dev_cfg =
+      ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(
+      esp_console_new_repl_usb_serial_jtag(&dev_cfg, &repl_cfg, &repl));
+
+  esp_console_register_help_command();
+
+  led_args.r = arg_int1(NULL, NULL, "<r>", "red 0-255");
+  led_args.g = arg_int1(NULL, NULL, "<g>", "green 0-255");
+  led_args.b = arg_int1(NULL, NULL, "<b>", "blue 0-255");
+  led_args.end = arg_end(2);
+  const esp_console_cmd_t led_cmd = {
+      .command = "led",
+      .help = "Set RGB LED color (0-255 per channel)",
+      .hint = NULL,
+      .func = &cmd_led,
+      .argtable = &led_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&led_cmd));
+
+  const esp_console_cmd_t info_cmd = {
+      .command = "info",
+      .help = "Show chip info and uptime",
+      .func = &cmd_info,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&info_cmd));
+
+  const esp_console_cmd_t enow_cmd = {
+      .command = "enow",
+      .help = "Broadcast a text message via ESP-NOW",
+      .func = &cmd_enow,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&enow_cmd));
+
+  ESP_ERROR_CHECK(esp_console_start_repl(repl));
+}
+
 void app_main(void) {
   esp_chip_info_t chip_info;
   esp_chip_info(&chip_info);
@@ -124,17 +250,6 @@ void app_main(void) {
 
   led_init();
   wifi_init_sta();
-
-  const uint8_t colors[3][3] = {
-      {16, 0, 0},
-      {0, 16, 0},
-      {0, 0, 16},
-  };
-
-  for (s_tick = 0;; s_tick++) {
-    const uint8_t *c = colors[s_tick % 3];
-    led_set(c[0], c[1], c[2]);
-    printf("Tick %d\n", s_tick);
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
+  enow_init();
+  start_repl();
 }
