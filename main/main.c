@@ -7,6 +7,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_now.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/event_groups.h"
@@ -182,6 +183,12 @@ static int cmd_led(int argc, char **argv) {
   return 0;
 }
 
+static int cmd_reboot(int argc, char **argv) {
+  printf("rebooting...\n");
+  esp_restart();
+  return 0;
+}
+
 static int cmd_info(int argc, char **argv) {
   esp_chip_info_t info;
   esp_chip_info(&info);
@@ -228,6 +235,13 @@ static void start_repl(void) {
       .func = &cmd_enow,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&enow_cmd));
+
+  const esp_console_cmd_t reboot_cmd = {
+      .command = "reboot",
+      .help = "Software reset the device",
+      .func = &cmd_reboot,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&reboot_cmd));
 
   ESP_ERROR_CHECK(esp_console_start_repl(repl));
 }
