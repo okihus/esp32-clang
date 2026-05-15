@@ -11,6 +11,10 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
+#include "led_strip.h"
+
+#define LED_GPIO    8
+#define LED_COUNT   1
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -20,6 +24,26 @@ static EventGroupHandle_t s_wifi_event_group;
 static int s_retry = 0;
 static httpd_handle_t s_server = NULL;
 static volatile int s_tick = 0;
+static led_strip_handle_t s_led;
+
+static void led_init(void)
+{
+    led_strip_config_t strip_cfg = {
+        .strip_gpio_num = LED_GPIO,
+        .max_leds = LED_COUNT,
+    };
+    led_strip_rmt_config_t rmt_cfg = {
+        .resolution_hz = 10 * 1000 * 1000,
+    };
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &s_led));
+    led_strip_clear(s_led);
+}
+
+static void led_set(uint8_t r, uint8_t g, uint8_t b)
+{
+    led_strip_set_pixel(s_led, 0, r, g, b);
+    led_strip_refresh(s_led);
+}
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
@@ -122,9 +146,17 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    led_init();
     wifi_init_sta();
 
+    const uint8_t colors[3][3] = {
+        {16,  0,  0},
+        { 0, 16,  0},
+        { 0,  0, 16},
+    };
     for (s_tick = 0; ; s_tick++) {
+        const uint8_t *c = colors[s_tick % 3];
+        led_set(c[0], c[1], c[2]);
         printf("Tick %d\n", s_tick);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

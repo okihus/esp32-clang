@@ -21,8 +21,9 @@ monitor:
 dev: flash monitor
 
 # Open the Kconfig menu (set WiFi creds here)
+# TERM override: Ghostty's terminfo isn't in the curses DB kconfig uses.
 menuconfig:
-    idf.py menuconfig
+    TERM=xterm-256color idf.py menuconfig
 
 # Remove build artifacts
 clean:
