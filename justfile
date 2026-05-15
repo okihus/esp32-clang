@@ -5,6 +5,9 @@ port := "/dev/ttyACM0"
 default:
     @just --list
 
+reconfigure:
+    idf.py reconfigure
+
 # Compile the firmware
 build:
     idf.py build

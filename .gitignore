@@ -12,6 +12,7 @@ devenv.local.yaml
 # ESP-IDF
 build/
 sdkconfig
+sdkconfig.defaults
 sdkconfig.old
 sdkconfig.ci
 managed_components/
